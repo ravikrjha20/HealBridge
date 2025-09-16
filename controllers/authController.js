@@ -1,190 +1,204 @@
-const User = require("../model/userModel");
+const Patient = require("../model/patientModel");
+const Doctor = require("../model/doctorModel");
+const Token = require("../model/token");
 const CustomError = require("../errors");
 const { StatusCodes } = require("http-status-codes");
 const { createTokenUser, attachCookiesToResponse } = require("../utils");
-const { getCache, setCache } = require("../utils/redisHelper");
+const crypto = require("crypto");
 
-// REGISTER
-const register = async (req, res) => {
-  const { name, username, email, password, avatar } = req.body;
+//=========== REGISTRATION =================
+
+// REGISTER A NEW PATIENT
+const registerPatient = async (req, res) => {
+  const { name, username, email, password } = req.body;
+  console.log(name);
 
   if (!name || !username || !email || !password) {
     throw new CustomError.BadRequestError(
-      "Please provide all required credentials"
+      "Please provide name, username, email, and password"
     );
   }
 
-  const emailExists = await User.findOne({ email });
-  if (emailExists)
-    throw new CustomError.BadRequestError("Email already in use");
+  const emailExists = await Patient.findOne({ email });
+  if (emailExists) {
+    throw new CustomError.BadRequestError(
+      "An account with this email already exists"
+    );
+  }
 
-  const usernameExists = await User.findOne({ username });
-  if (usernameExists)
-    throw new CustomError.BadRequestError("Username already taken");
+  const usernameExists = await Patient.findOne({ username });
+  if (usernameExists) {
+    throw new CustomError.BadRequestError("This username is already taken");
+  }
 
-  if (/\s/.test(username))
+  if (/\s/.test(username)) {
     throw new CustomError.BadRequestError("Username cannot contain spaces");
+  }
 
-  const user = await User.create({ name, username, email, password, avatar });
+  // First account is an admin
+  // const isFirstAccount = (await Patient.countDocuments({})) === 0;
+  // const role = isFirstAccount ? 'admin' : 'patient';
 
-  // Cache in Redis (primary key = userId)
-  console.log(user);
-
-  await setCache(`user:${user._id}`, user);
-  await setCache(`username:${username}`, user._id.toString());
-  await setCache(`email:${email}`, user._id.toString());
-
-  const tokenUser = createTokenUser(user);
-  attachCookiesToResponse({ res, user: tokenUser });
+  const user = await Patient.create({ name, username, email, password });
 
   const { password: _, ...safeUser } = user._doc;
-  res.status(StatusCodes.CREATED).json({ user: safeUser });
+  res.status(StatusCodes.CREATED).json({
+    msg: "Patient registered successfully. Please log in.",
+    user: safeUser,
+  });
 };
+// REGISTER A NEW DOCTOR
+const registerDoctor = async (req, res) => {
+  const {
+    name,
+    username,
+    email,
+    password,
+    specialization,
+    licenseNumber,
+    licenseState,
+  } = req.body;
 
-// LOGIN
-const login = async (req, res) => {
-  const { identifier, password } = req.body;
+  // Validate all required fields from the request body
+  const requiredFields = {
+    name,
+    username,
+    email,
+    password,
+    specialization,
+    licenseNumber,
+    licenseState,
+  };
+  for (const [field, value] of Object.entries(requiredFields)) {
+    if (!value) {
+      throw new CustomError.BadRequestError(
+        `Please provide the required field: ${field}`
+      );
+    }
+  }
 
-  if (!identifier || !password) {
+  // Check if email already exists
+  const emailExists = await Doctor.findOne({ email });
+  if (emailExists) {
     throw new CustomError.BadRequestError(
-      "Please provide email/username and password"
+      "An account with this email already exists"
     );
   }
 
-  let user;
-  let userId;
-
-  // 1️⃣ Try fetching userId from Redis
-  if (identifier.includes("@")) {
-    userId = await getCache(`email:${identifier}`);
-  } else {
-    userId = await getCache(`username:${identifier}`);
+  // Check if username is already taken
+  const usernameExists = await Doctor.findOne({ username });
+  if (usernameExists) {
+    throw new CustomError.BadRequestError("This username is already taken");
   }
 
-  // 2️⃣ Fetch user from cache if userId found
-  if (userId) {
-    user = await getCache(`user:${userId}`);
+  // Check if license number is already registered
+  const licenseExists = await Doctor.findOne({
+    "license.number": licenseNumber,
+  });
+  if (licenseExists) {
+    throw new CustomError.BadRequestError(
+      "This license number is already registered"
+    );
   }
 
-  // 3️⃣ Fallback to Mongo if not cached
-  if (!user?.password) {
-    user = await User.findOne({
-      $or: [{ email: identifier }, { username: identifier }],
-    }).select("+password");
-    if (!user)
-      throw new CustomError.UnauthenticatedError("Invalid credentials");
-    userId = user._id.toString();
-  }
-  console.log(user);
-  let a = await getCache(`user:${userId}`);
-  console.log(a);
-
-  // 4️⃣ Compare passwords
-  const hashedPassword = user.password;
-  if (!hashedPassword)
-    throw new CustomError.UnauthenticatedError("Invalid credentials");
-
-  const isPasswordCorrect = await User.comparePassword(
+  // Create the new doctor document with the correctly nested license object
+  const user = await Doctor.create({
+    name,
+    username,
+    email,
     password,
-    hashedPassword
-  );
-  if (!isPasswordCorrect)
+    specialization,
+    license: { number: licenseNumber, state: licenseState },
+  });
+
+  // Remove the password from the returned user object
+  const { password: _, ...safeUser } = user._doc;
+
+  res.status(StatusCodes.CREATED).json({
+    msg: "Doctor registered successfully. You may now log in.",
+    user: safeUser,
+  });
+};
+//=========== LOGIN (UNIFIED) =================
+
+const login = async (req, res) => {
+  const { identifier, password, role } = req.body;
+
+  if (!identifier || !password || !role) {
+    throw new CustomError.BadRequestError(
+      "Please provide email/username, password, and role ('Patient' or 'Doctor')"
+    );
+  }
+
+  const Model = role === "Patient" ? Patient : Doctor;
+  if (!Model) {
+    throw new CustomError.BadRequestError("Invalid role specified.");
+  }
+
+  const user = await Model.findOne({
+    $or: [{ email: identifier }, { username: identifier }],
+  }).select("+password");
+
+  if (!user) {
     throw new CustomError.UnauthenticatedError("Invalid credentials");
+  }
 
-  // 5️⃣ Cache user and mappings
-  await setCache(`user:${userId}`, user);
-  await setCache(`username:${user.username}`, user._id.toString());
-  await setCache(`email:${user.email}`, user._id.toString());
+  const isPasswordCorrect = await user.comparePassword(password);
+  if (!isPasswordCorrect) {
+    throw new CustomError.UnauthenticatedError("Invalid credentials");
+  }
 
-  // 6️⃣ Token + cookies
-  const tokenUser = createTokenUser(user);
-  attachCookiesToResponse({ res, user: tokenUser });
+  const tokenUser = createTokenUser(user, role);
 
-  const { password: _, ...safeUser } = user._doc || user;
+  let refreshToken = "";
+  const existingToken = await Token.findOne({ user: user._id });
+
+  if (existingToken) {
+    if (!existingToken.isValid)
+      throw new CustomError.UnauthenticatedError(
+        "Your account is disabled. Please contact support."
+      );
+    refreshToken = existingToken.refreshToken;
+  } else {
+    refreshToken = crypto.randomBytes(40).toString("hex");
+    const userAgent = req.headers["user-agent"];
+    const ip = req.ip;
+    await Token.create({
+      refreshToken,
+      ip,
+      userAgent,
+      user: user._id,
+      userType: role,
+    });
+  }
+
+  attachCookiesToResponse({ res, user: tokenUser, refreshToken });
+
+  const { password: _, ...safeUser } = user._doc;
   res.status(StatusCodes.OK).json({ user: safeUser });
 };
 
-// LOGOUT
-const logout = (req, res) => {
-  const isProduction = process.env.NODE_ENV === "production";
-  const options = {
+//=========== LOGOUT (UNIFIED) =================
+
+const logout = async (req, res) => {
+  // req.user is populated by the authentication middleware
+  await Token.findOneAndDelete({ user: req.user.userId });
+
+  res.cookie("accessToken", "logout", {
     httpOnly: true,
-    secure: isProduction,
-    signed: true,
-    path: "/",
-    sameSite: isProduction ? "none" : "lax",
-  };
-  res.clearCookie("accessToken", options);
-  res.clearCookie("refreshToken", options);
-  res.status(StatusCodes.OK).json({ msg: "User logged out!" });
+    expires: new Date(Date.now()),
+  });
+  res.cookie("refreshToken", "logout", {
+    httpOnly: true,
+    expires: new Date(Date.now()),
+  });
+
+  res.status(StatusCodes.OK).json({ msg: "User logged out successfully!" });
 };
 
-// UPDATE PROFILE
-const updateProfile = async (req, res) => {
-  try {
-    const { name, username, email, previousPassword, password, avatar } =
-      req.body;
-    const userId = req.user.userId;
-
-    const user = await User.findById(userId);
-    if (!user) return res.status(404).json({ msg: "User not found" });
-
-    if ((email && email !== user.email) || password) {
-      if (!previousPassword)
-        return res.status(400).json({
-          msg: "Previous password is required to update email or password",
-        });
-
-      const isMatch = await user.comparePassword(previousPassword);
-      if (!isMatch)
-        return res.status(400).json({ msg: "Previous password is incorrect" });
-    }
-
-    if (name) user.name = name;
-    if (username) user.username = username;
-    if (email) user.email = email;
-    if (avatar) user.avatar = avatar;
-    if (password) user.password = password;
-
-    await user.save();
-
-    // Refresh cache
-    await setCache(`user:${user._id}`, user);
-    await setCache(`username:${user.username}`, user._id.toString());
-    await setCache(`email:${user.email}`, user._id.toString());
-
-    const { password: _, ...updatedUser } = user.toObject();
-    res
-      .status(200)
-      .json({ msg: "Profile updated successfully", user: updatedUser });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ msg: "Server error" });
-  }
+module.exports = {
+  registerPatient,
+  registerDoctor,
+  login,
+  logout,
 };
-
-// CHECK AUTH
-const checkAuth = async (req, res) => {
-  try {
-    const userId = req.user.userId;
-
-    let user = await getCache(`user:${userId}`);
-    if (user) {
-      if (user.password) delete user.password;
-      return res.status(StatusCodes.OK).json({ user });
-    }
-
-    const userDoc = await User.findById(userId);
-    if (!userDoc) return res.status(404).json({ msg: "User not found" });
-
-    const { password: _, ...safeUser } = userDoc._doc;
-    await setCache(`user:${userId}`, safeUser);
-
-    res.status(StatusCodes.OK).json({ user: safeUser });
-  } catch (err) {
-    console.error("checkAuth error:", err);
-    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ msg: "Server error" });
-  }
-};
-
-module.exports = { register, login, logout, checkAuth, updateProfile };

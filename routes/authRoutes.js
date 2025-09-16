@@ -1,19 +1,17 @@
 const express = require("express");
+const router = express.Router();
+
 const {
-  register,
+  registerPatient,
+  registerDoctor,
   login,
   logout,
-  checkAuth,
-  updateProfile,
 } = require("../controllers/authController");
-const {
-  authenticateUser,
-  authorizePermissions,
-} = require("../middleware/authentication");
-const router = express.Router();
-router.post("/register", register);
+
+const { authenticateUser } = require("../middleware/authentication");
+router.post("/register/patient", registerPatient);
+router.post("/register/doctor", registerDoctor);
 router.post("/login", login);
-router.get("/logout", logout);
-router.get("/check", authenticateUser, checkAuth);
-router.patch("/update", authenticateUser, updateProfile);
+router.delete("/logout", authenticateUser, logout);
+
 module.exports = router;

@@ -6,7 +6,7 @@ const currentMatches = new Map(); // matchId -> { matchId, player1Id, player2Id,
 const MATCH_TIMEOUT_MS = 30000;
 const getReceiverSocketId = (userId) => userSocketMap[userId];
 const activeInvites = new Map();
-const User = require("../model/userModel");
+const User = require("../model/patientModel");
 function addInvite(
   playerId,
   opponentId,

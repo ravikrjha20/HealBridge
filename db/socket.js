@@ -4,7 +4,7 @@ const http = require("http");
 const express = require("express");
 const { v4: uuidv4 } = require("uuid");
 const mongoose = require("mongoose");
-const User = require("../model/userModel"); // adjust path to your model
+const User = require("../model/patientModel"); // adjust path to your model
 const { setCache, delCache } = require("../utils/redisHelper");
 const {
   getReceiverSocketId,
